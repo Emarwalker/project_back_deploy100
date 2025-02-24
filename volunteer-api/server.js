@@ -14,7 +14,8 @@ require('dotenv').config();
 const sequelize = require('./config/database');
 
 // Import models and associations
-const { Activity, ActivityCategory } = require('./models/associations');
+require('./models/associations');
+require('./models/associationsfile');
 
 // Import routes
 const authRoutes = require('./routes/auth.routes');
@@ -38,56 +39,64 @@ app.use(cookieParser(COOKIE_SECRET));
 const { initSocket } = require('./config/socket');
 initSocket(server);
 
-// Security Middleware
-app.use(helmet({
- contentSecurityPolicy: {
-   directives: {
-     defaultSrc: ["'self'"],
-     scriptSrc: ["'self'", "'unsafe-inline'"],
-     styleSrc: ["'self'", "'unsafe-inline'"],
-     imgSrc: ["'self'", "data:", "https:"],
-   },
- },
- crossOriginEmbedderPolicy: false,
- crossOriginResourcePolicy: false 
-}));
+// ✅ Security Middleware
+app.use(helmet());
 app.use(xss());
 app.use(hpp());
 app.use(cookieParser());
 
-// Rate limiting
+// ✅ Force HTTPS Redirect (For Cloudflare & Reverse Proxy)
+app.set('trust proxy', true);
+app.use((req, res, next) => {
+  if (req.headers['x-forwarded-proto'] !== 'https' && process.env.NODE_ENV === 'production') {
+    return res.redirect(`https://${req.headers.host}${req.url}`);
+  }
+  next();
+});
+
+// ✅ Rate Limiting
 const limiter = rateLimit({
- windowMs: 100 * 60 * 1000,
- max: 1200,
- message: {
-   success: false,
-   message: 'คำขอมากเกินไป กรุณาลองใหม่ในภายหลัง'
- }
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000, // Limit 1000 requests per window per IP
+  skipFailedRequests: true,
+  keyGenerator: (req) => req.ip, // Ensure accurate IP tracking behind proxy
+  message: {
+    success: false,
+    message: 'คุณส่งคำขอมากเกินไป กรุณาลองใหม่ในภายหลัง'
+  }
 });
 app.use('/api/', limiter);
 
-// CORS
+// ✅ CORS Configuration
+const allowedOrigins = [
+  'http://localhost:5173',
+  'https://project-100-front.onrender.com'
+];
+
 app.use(cors({
- origin: process.env.CLIENT_URL || "http://localhost:5173",
- methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
- allowedHeaders: ['Content-Type', 'Authorization'],
- credentials: true,
- maxAge: 600
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.warn('🚫 CORS Blocked:', origin);
+      callback(new Error('CORS Policy Blocks This Request'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  exposedHeaders: ['Authorization']
 }));
 
-// Body parser
-app.use(express.json({ limit: '100kb' }));
-app.use(express.urlencoded({ extended: true, limit: '100kb' }));
+// ✅ Body Parser
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
-// Initialize models and associations
-require('./models/associations');
-require('./models/associationsfile');
-
-// Static folders
+// ✅ Static File Directories
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/uploadsfile', express.static(path.join(__dirname, 'uploadsfile')));
 
-// Routes
+// ✅ Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/faculty', facultyRoutes);
@@ -99,89 +108,95 @@ app.use('/api/', planactivityRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/', contactRoutes);
 
-// ตั้งค่าโฟลเดอร์สำหรับไฟล์
+// ✅ Create Upload Directories if Not Exists
 const setupUploadDirectories = () => {
- ['uploads', 'uploadsfile'].forEach(dir => {
-   const dirPath = path.join(__dirname, dir);
-   if (!fs.existsSync(dirPath)) {
-     fs.mkdirSync(dirPath, { recursive: true, mode: '0755' });
-   }
- });
+  ['uploads', 'uploadsfile'].forEach(dir => {
+    const dirPath = path.join(__dirname, dir);
+    if (!fs.existsSync(dirPath)) {
+      fs.mkdirSync(dirPath, { recursive: true, mode: '0755' });
+    }
+  });
 };
 
-// Error handling middleware
+// ✅ Error Handling Middleware
 app.use((err, req, res, next) => {
- console.error('Error:', err.message);
- console.error('Stack:', err.stack);
+  console.error('🚨 ERROR:', {
+    message: err.message,
+    stack: err.stack,
+    route: req.originalUrl,
+    method: req.method,
+    ip: req.ip
+  });
 
- if (err.name === 'SequelizeValidationError') {
-   return res.status(400).json({
-     success: false,
-     message: 'ข้อมูลไม่ถูกต้อง',
-     errors: err.errors.map(e => e.message)
-   });
- }
+  if (err.name === 'SequelizeValidationError') {
+    return res.status(400).json({
+      success: false,
+      message: 'ข้อมูลไม่ถูกต้อง',
+      errors: err.errors.map(e => e.message)
+    });
+  }
 
- if (err.name === 'SequelizeUniqueConstraintError') {
-   return res.status(400).json({
-     success: false,
-     message: 'ข้อมูลซ้ำในระบบ',
-     errors: err.errors.map(e => e.message)
-   });
- }
+  if (err.name === 'SequelizeUniqueConstraintError') {
+    return res.status(400).json({
+      success: false,
+      message: 'ข้อมูลซ้ำในระบบ',
+      errors: err.errors.map(e => e.message)
+    });
+  }
 
- if (err.name === 'JsonWebTokenError') {
-   return res.status(401).json({
-     success: false,
-     message: 'Token ไม่ถูกต้อง'
-   });
- }
+  if (err.name === 'JsonWebTokenError') {
+    return res.status(401).json({
+      success: false,
+      message: 'Token ไม่ถูกต้อง'
+    });
+  }
 
- res.status(err.status || 500).json({
-   success: false,
-   message: err.message || 'เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์'
- });
+  res.status(err.status || 500).json({
+    success: false,
+    message: err.message || 'เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์'
+  });
 });
 
-// 404 Handler
+// ✅ 404 Handler
 app.use((req, res) => {
- res.status(404).json({
-   success: false,
-   message: 'ไม่พบ API ที่ร้องขอ'
- });
+  res.status(404).json({
+    success: false,
+    message: 'ไม่พบ API ที่ร้องขอ'
+  });
 });
 
-const PORT = process.env.PORT || 5001;
+// ✅ Start Server
+const PORT = process.env.PORT || 3000;
 
 async function startServer() {
- try {
-   await sequelize.authenticate();
-   console.log('เชื่อมต่อฐานข้อมูลสำเร็จ');
-   
-   await sequelize.sync();
-   console.log('ซิงค์ฐานข้อมูลสำเร็จ');
-   
-   setupUploadDirectories();
-   
-   server.listen(PORT, () => { // Changed from app.listen to server.listen
-     console.log(`เซิร์ฟเวอร์ทำงานที่พอร์ต ${PORT}`);
-     console.log(`API URL: http://localhost:${PORT}/api`);
-   });
- } catch (error) {
-   console.error('ไม่สามารถเชื่อมต่อฐานข้อมูล:', error);
-   process.exit(1);
- }
+  try {
+    await sequelize.authenticate();
+    console.log('✅ เชื่อมต่อฐานข้อมูลสำเร็จ');
+    
+    await sequelize.sync();
+    console.log('✅ ซิงค์ฐานข้อมูลสำเร็จ');
+    
+    setupUploadDirectories();
+    
+    server.listen(PORT, () => {
+      console.log(`🚀 เซิร์ฟเวอร์ทำงานที่พอร์ต ${PORT}`);
+      console.log(`📌 API URL: http://localhost:${PORT}/api`);
+    });
+  } catch (error) {
+    console.error('❌ ไม่สามารถเชื่อมต่อฐานข้อมูล:', error);
+    process.exit(1);
+  }
 }
 
-// Global error handlers
+// ✅ Global Error Handlers
 process.on('unhandledRejection', (err) => {
- console.error('Unhandled Promise Rejection:', err);
- process.exit(1);
+  console.error('🚨 Unhandled Promise Rejection:', err);
+  process.exit(1);
 });
 
 process.on('uncaughtException', (err) => {
- console.error('Uncaught Exception:', err);
- process.exit(1);
+  console.error('🚨 Uncaught Exception:', err);
+  process.exit(1);
 });
 
 startServer();
