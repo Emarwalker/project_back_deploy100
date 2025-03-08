@@ -55,25 +55,35 @@ app.use(xss());
 app.use(hpp());
 app.use(cookieParser());
 
+app.set('trust proxy', true);
 // Rate limiting
 const limiter = rateLimit({
- windowMs: 100 * 60 * 1000,
- max: 1200,
- message: {
-   success: false,
-   message: 'คำขอมากเกินไป กรุณาลองใหม่ในภายหลัง'
- }
+  windowMs: 100 * 60 * 1000,
+  max: 1200,
+  message: {
+    success: false,
+    message: 'คำขอมากเกินไป กรุณาลองใหม่ในภายหลัง'
+  }
 });
 app.use('/api/', limiter);
 
 // CORS
 app.use(cors({
- origin: process.env.CLIENT_URL || "http://localhost:5173",
- methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
- allowedHeaders: ['Content-Type', 'Authorization'],
- credentials: true,
- maxAge: 600
+  origin: function (origin, callback) {
+    console.log('🔍 Request Origin:', origin);
+    if (!origin || ['http://localhost:5173', 'https://project-100-front.onrender.com'].includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('CORS Policy Blocks This Request'));
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  exposedHeaders: ['Authorization'],  // 👈 เพิ่มเพื่อให้ Browser เห็น Authorization Headers
+  credentials: true
 }));
+
+
 
 // Body parser
 app.use(express.json({ limit: '100kb' }));
