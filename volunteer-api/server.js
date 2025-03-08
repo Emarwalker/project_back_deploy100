@@ -55,6 +55,8 @@ app.use(xss());
 app.use(hpp());
 app.use(cookieParser());
 
+app.set('trust proxy', 1);
+
 // Rate limiting
 const limiter = rateLimit({
  windowMs: 100 * 60 * 1000,
